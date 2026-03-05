@@ -10,7 +10,9 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:5173","https://stadium-ticketing.vercel.app"
+    origin:[
+"http://localhost:5173","https://stadium-ticketing.vercel.app"
+],
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -20,7 +22,9 @@ const PORT = 3000;
 
 // Middleware
 app.use(cors({
-  origin: "http://localhost:5173", "https://stadium-ticketing.vercel.app"
+  origin:[
+"http://localhost:5173", "https://stadium-ticketing.vercel.app"
+],
   credentials: true
 }));
 app.use(express.json());
