@@ -16,9 +16,6 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/event/:id" element={<EventDetailPage />} />
           <Route path="/admin" element={<AdminPage />} />
-          <Route path="/checkout/:eventId" element={<CheckoutPage />} />
-          <Route path="/confirmation/:bookingReference" element={<BookingConfirmationPage />} />
-          <Route path="/week2-demo" element={<Week2Demo />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
         <footer className="footer">
