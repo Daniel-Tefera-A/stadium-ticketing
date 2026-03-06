@@ -20,7 +20,7 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
     if (socket) {
       socket.on('seat-update', handleSeatUpdate);
       socket.on('seats-generated', () => {
-        fetchSeats(); // Reload seats when generated
+        fetchSeats();
       });
     }
 
@@ -48,15 +48,9 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
 
   const fetchSeats = async () => {
     try {
-      console.log('Fetching seats from:', `${API_URL}/api/seats/event/${eventId}`);
       const response = await fetch(`${API_URL}/api/seats/event/${eventId}`);
-      
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
       const data = await response.json();
-      console.log('Seats fetched:', data.length);
       setSeats(data);
       setError(null);
     } catch (err) {
@@ -104,7 +98,11 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
     return true;
   }, [getSeatStatus, selectedSeats, maxSelectable]);
 
-  const handleSeatClick = async (seat) => {
+  const handleSeatClick = (e, seat) => {
+    // Stop event propagation to prevent any parent handlers
+    e.preventDefault();
+    e.stopPropagation();
+    
     if (!canSelectSeat(seat)) {
       if (selectedSeats.length >= maxSelectable) {
         alert(`You can only select up to ${maxSelectable} seats`);
@@ -112,63 +110,8 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
       return;
     }
 
-    const isSelected = selectedSeats.includes(seat.id);
-    
-    // Optimistic update
+    // Just call onSeatSelect - no navigation!
     onSeatSelect(seat);
-
-    try {
-      if (!isSelected) {
-        const holdUntil = new Date(Date.now() + 10 * 60 * 1000);
-        const response = await fetch(`${API_URL}/api/seats/${seat.id}/status`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            status: 'held', 
-            heldUntil: holdUntil.toISOString(),
-            eventId 
-          })
-        });
-        
-        if (!response.ok) {
-          throw new Error('Failed to hold seat');
-        }
-        
-        if (socket) {
-          socket.emit('seat-held', {
-            seatId: seat.id,
-            eventId,
-            heldUntil: holdUntil.toISOString()
-          });
-        }
-      } else {
-        const response = await fetch(`${API_URL}/api/seats/${seat.id}/status`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ 
-            status: 'available', 
-            heldUntil: null,
-            eventId 
-          })
-        });
-
-        if (!response.ok) {
-          throw new Error('Failed to release seat');
-        }
-
-        if (socket) {
-          socket.emit('seat-released', {
-            seatId: seat.id,
-            eventId
-          });
-        }
-      }
-    } catch (err) {
-      console.error('Failed to update seat:', err);
-      // Revert optimistic update
-      onSeatSelect(seat);
-      alert('Failed to update seat. Please try again.');
-    }
   };
 
   const handleKeyDown = (e) => {
@@ -242,8 +185,9 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
                     return (
                       <button
                         key={seat.id}
+                        type="button" // Important: prevents form submission
                         className={`seat ${status} ${hoveredSeat === seat.id ? 'hovered' : ''}`}
-                        onClick={() => handleSeatClick(seat)}
+                        onClick={(e) => handleSeatClick(e, seat)}
                         onMouseEnter={() => setHoveredSeat(seat.id)}
                         onMouseLeave={() => setHoveredSeat(null)}
                         disabled={!selectable}
