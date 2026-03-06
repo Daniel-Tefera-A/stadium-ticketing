@@ -11,6 +11,8 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
   const [selectionMode, setSelectionMode] = useState('single');
   const { socket, isConnected, joinEvent, leaveEvent } = useSocket();
 
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
   useEffect(() => {
     fetchSeats();
     joinEvent(eventId);
@@ -46,13 +48,20 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
 
   const fetchSeats = async () => {
     try {
-      const response = await fetch(`http://localhost:3000/api/seats/event/${eventId}`);
+      console.log('Fetching seats from:', `${API_URL}/api/seats/event/${eventId}`);
+      const response = await fetch(`${API_URL}/api/seats/event/${eventId}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
       const data = await response.json();
+      console.log('Seats fetched:', data.length);
       setSeats(data);
       setError(null);
     } catch (err) {
       console.error('Failed to load seats:', err);
-      setError('Failed to load seats');
+      setError('Failed to load seats: ' + err.message);
     } finally {
       setLoading(false);
     }
@@ -111,7 +120,7 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
     try {
       if (!isSelected) {
         const holdUntil = new Date(Date.now() + 10 * 60 * 1000);
-        await fetch(`http://localhost:3000/api/seats/${seat.id}/status`, {
+        const response = await fetch(`${API_URL}/api/seats/${seat.id}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -121,6 +130,10 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
           })
         });
         
+        if (!response.ok) {
+          throw new Error('Failed to hold seat');
+        }
+        
         if (socket) {
           socket.emit('seat-held', {
             seatId: seat.id,
@@ -129,7 +142,7 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
           });
         }
       } else {
-        await fetch(`http://localhost:3000/api/seats/${seat.id}/status`, {
+        const response = await fetch(`${API_URL}/api/seats/${seat.id}/status`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ 
@@ -138,6 +151,10 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
             eventId 
           })
         });
+
+        if (!response.ok) {
+          throw new Error('Failed to release seat');
+        }
 
         if (socket) {
           socket.emit('seat-released', {
@@ -148,6 +165,7 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
       }
     } catch (err) {
       console.error('Failed to update seat:', err);
+      // Revert optimistic update
       onSeatSelect(seat);
       alert('Failed to update seat. Please try again.');
     }
