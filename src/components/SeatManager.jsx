@@ -14,14 +14,23 @@ const SeatManager = ({ eventId, eventName, onClose }) => {
     ]
   });
 
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
   useEffect(() => {
     loadSeats();
   }, [eventId]);
 
   const loadSeats = async () => {
     try {
-      const response = await fetch(`http://localhost:3000/api/seats/event/${eventId}`);
+      console.log('Loading seats from:', `${API_URL}/api/seats/event/${eventId}`);
+      const response = await fetch(`${API_URL}/api/seats/event/${eventId}`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
       const data = await response.json();
+      console.log('Seats loaded:', data);
       setSeats(data);
       
       const sectionMap = {};
@@ -56,7 +65,7 @@ const SeatManager = ({ eventId, eventName, onClose }) => {
       setSections(Object.values(sectionMap));
     } catch (error) {
       console.error('Failed to load seats:', error);
-      alert('Failed to load seats');
+      alert('Failed to load seats: ' + error.message);
     } finally {
       setLoading(false);
     }
@@ -64,13 +73,16 @@ const SeatManager = ({ eventId, eventName, onClose }) => {
 
   const generateSeats = async () => {
     try {
-      const response = await fetch(`http://localhost:3000/api/seats/generate/${eventId}`, {
+      console.log('Generating seats with:', generatorForm.sections);
+      
+      const response = await fetch(`${API_URL}/api/seats/generate/${eventId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sections: generatorForm.sections })
       });
       
       const data = await response.json();
+      console.log('Generate response:', data);
       
       if (response.ok) {
         alert(`✅ Seats generated successfully! Total: ${data.totalSeats} seats`);
@@ -81,13 +93,13 @@ const SeatManager = ({ eventId, eventName, onClose }) => {
       }
     } catch (error) {
       console.error('Error:', error);
-      alert('Failed to generate seats');
+      alert('Failed to generate seats: ' + error.message);
     }
   };
 
   const updateSeatPrice = async (seatId, newPrice) => {
     try {
-      const response = await fetch(`http://localhost:3000/api/seats/${seatId}/price`, {
+      const response = await fetch(`${API_URL}/api/seats/${seatId}/price`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ price: parseFloat(newPrice) })
@@ -96,10 +108,11 @@ const SeatManager = ({ eventId, eventName, onClose }) => {
       if (response.ok) {
         loadSeats();
       } else {
-        alert('Failed to update price');
+        const data = await response.json();
+        alert(data.error || 'Failed to update price');
       }
     } catch (error) {
-      alert('Failed to update price');
+      alert('Failed to update price: ' + error.message);
     }
   };
 
@@ -107,20 +120,22 @@ const SeatManager = ({ eventId, eventName, onClose }) => {
     if (!window.confirm(`Update all prices in ${section} to $${newPrice}?`)) return;
     
     try {
-      const response = await fetch(`http://localhost:3000/api/seats/event/${eventId}/section/${section}/price`, {
+      const response = await fetch(`${API_URL}/api/seats/event/${eventId}/section/${section}/price`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ price: parseFloat(newPrice) })
       });
       
+      const data = await response.json();
+      
       if (response.ok) {
-        alert(`✅ ${section} prices updated`);
+        alert(`✅ ${section} prices updated (${data.affectedRows} seats)`);
         loadSeats();
       } else {
-        alert('Failed to update section prices');
+        alert(data.error || 'Failed to update section prices');
       }
     } catch (error) {
-      alert('Failed to update section prices');
+      alert('Failed to update section prices: ' + error.message);
     }
   };
 
