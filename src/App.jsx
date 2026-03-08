@@ -5,6 +5,8 @@ import HomePage from './pages/HomePage';
 import EventDetailPage from './pages/EventDetailPage';
 import AdminPage from './pages/AdminPage';
 import NotFoundPage from './pages/NotFoundPage';
+import CheckoutPage from './pages/CheckoutPage';
+import BookingConfirmationPage from './pages/BookingConfirmationPage';
 import './styles/App.css';
 
 function App() {
@@ -16,6 +18,8 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/event/:id" element={<EventDetailPage />} />
           <Route path="/admin" element={<AdminPage />} />
+<Route path="/checkout/:eventId" element={<CheckoutPage />} />
+          <Route path="/confirmation/:bookingReference" element={<BookingConfirmationPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
         <footer className="footer">
