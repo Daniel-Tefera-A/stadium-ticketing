@@ -15,21 +15,30 @@ export const SocketProvider = ({ children }) => {
   const [socket, setSocket] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
 
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
   useEffect(() => {
-    const newSocket = io('http://localhost:3000');
+    console.log('Connecting to socket at:', API_URL);
+    
+    const newSocket = io(API_URL, {
+      withCredentials: true,
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 5,
+      reconnectionDelay: 1000
+    });
     
     newSocket.on('connect', () => {
-      console.log('Connected to server');
+      console.log('✅ Connected to server');
       setIsConnected(true);
     });
 
     newSocket.on('disconnect', () => {
-      console.log('Disconnected from server');
+      console.log('❌ Disconnected from server');
       setIsConnected(false);
     });
 
     newSocket.on('connect_error', (error) => {
-      console.error('Connection error:', error);
+      console.error('Socket connection error:', error);
       setIsConnected(false);
     });
 
@@ -38,19 +47,17 @@ export const SocketProvider = ({ children }) => {
     return () => {
       newSocket.close();
     };
-  }, []);
+  }, [API_URL]);
 
   const joinEvent = (eventId) => {
     if (socket && isConnected) {
       socket.emit('join-event', eventId);
-      console.log(`Joined event room: event-${eventId}`);
     }
   };
 
   const leaveEvent = (eventId) => {
     if (socket && isConnected) {
       socket.emit('leave-event', eventId);
-      console.log(`Left event room: event-${eventId}`);
     }
   };
 
