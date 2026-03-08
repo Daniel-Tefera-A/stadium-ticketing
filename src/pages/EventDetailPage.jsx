@@ -45,15 +45,23 @@ const EventDetailPage = () => {
   };
 
   const handleSeatSelect = (seat) => {
-    setSelectedSeats(prev => {
-      const isSelected = prev.some(s => s.id === seat.id);
-      if (isSelected) {
-        return prev.filter(s => s.id !== seat.id);
-      } else {
-        return [...prev, seat];
+  setSelectedSeats(prev => {
+    // Check if seat is already selected
+    const isSelected = prev.some(s => s.id === seat.id);
+    
+    if (isSelected) {
+      // Remove from selection
+      return prev.filter(s => s.id !== seat.id);
+    } else {
+      // Add to selection (but don't exceed max)
+      if (prev.length >= 10) {
+        alert('You can only select up to 10 seats');
+        return prev;
       }
-    });
-  };
+      return [...prev, seat];
+    }
+  });
+};
 
   const handleRemoveSeat = (seatToRemove) => {
     setSelectedSeats(prev => prev.filter(seat => seat.id !== seatToRemove.id));
