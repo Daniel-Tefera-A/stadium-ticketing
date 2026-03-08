@@ -5,6 +5,7 @@ const bcrypt = require('bcryptjs');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
+const { sendEmail } = require('./services/emailService');
 require('dotenv').config();
 
 const app = express();
@@ -31,7 +32,7 @@ const io = socketIo(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production' 
       ? [process.env.FRONTEND_URL] 
-      : ["http://localhost:5173"],
+      : ["http://localhost:5173", "http://localhost:3000"],
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -43,7 +44,7 @@ const PORT = process.env.PORT || 3000;
 const corsOptions = {
   origin: process.env.NODE_ENV === 'production'
     ? [process.env.FRONTEND_URL]
-    : ["http://localhost:5173"],
+    : ["http://localhost:5173", "http://localhost:3000"],
   credentials: true,
   optionsSuccessStatus: 200
 };
@@ -57,7 +58,22 @@ app.use(express.static('public'));
 
 // Generate unique booking reference
 function generateBookingReference() {
-  return 'BK' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 5).toUpperCase();
+  const prefix = 'BK';
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 7).toUpperCase();
+  return `${prefix}${timestamp}${random}`;
+}
+
+// Format date for email
+function formatEventDate(dateString) {
+  return new Date(dateString).toLocaleString('en-US', {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  });
 }
 
 // ==================== EVENTS ROUTES ====================
@@ -261,7 +277,7 @@ app.post('/api/seats/generate/:eventId', async (req, res) => {
   }
 });
 
-// Update seat status
+// Update seat status (hold/release/book)
 app.patch('/api/seats/:seatId/status', async (req, res) => {
   const { seatId } = req.params;
   const { status, heldUntil, bookingId, eventId } = req.body;
@@ -393,11 +409,42 @@ app.post('/api/bookings', async (req, res) => {
       });
     });
     
+    // Send confirmation email (don't await - don't block response)
+    try {
+      const eventResult = await pool.query(
+        'SELECT * FROM events WHERE id = $1',
+        [eventId]
+      );
+      const event = eventResult.rows[0];
+
+      const seatList = seats.map(s => ({
+        section: s.section,
+        row: s.row,
+        seat: s.seat
+      }));
+
+      sendEmail(
+        customerEmail,
+        'bookingConfirmation',
+        {
+          customerName,
+          bookingReference: bookingRef,
+          eventName: event.name,
+          eventDate: formatEventDate(event.date),
+          venue: event.venue || 'Main Stadium',
+          seats: seatList,
+          total: (totalAmount * 1.1).toFixed(2)
+        }
+      ).catch(err => console.error('Background email error:', err));
+    } catch (emailErr) {
+      console.error('Failed to prepare email:', emailErr);
+    }
+    
     res.status(201).json({
       message: 'Booking created successfully',
       bookingId,
       bookingReference: bookingRef,
-      totalAmount
+      totalAmount: totalAmount * 1.1
     });
     
   } catch (err) {
@@ -432,7 +479,11 @@ app.get('/api/bookings/:reference', async (req, res) => {
       [booking.id]
     );
     
-    res.json({ ...booking, seats: seatsResult.rows });
+    res.json({ 
+      ...booking, 
+      seats: seatsResult.rows,
+      selectedSeats: seatsResult.rows // For frontend compatibility
+    });
     
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -467,6 +518,18 @@ app.patch('/api/bookings/:id/cancel', async (req, res) => {
   try {
     await client.query('BEGIN');
     
+    // Get booking details for email
+    const bookingResult = await client.query(
+      'SELECT * FROM bookings WHERE id = $1',
+      [id]
+    );
+    
+    if (bookingResult.rows.length === 0) {
+      throw new Error('Booking not found');
+    }
+    
+    const booking = bookingResult.rows[0];
+    
     // Update booking status
     await client.query(
       'UPDATE bookings SET status = $1 WHERE id = $2',
@@ -480,6 +543,20 @@ app.patch('/api/bookings/:id/cancel', async (req, res) => {
     );
     
     await client.query('COMMIT');
+    
+    // Send cancellation email
+    try {
+      sendEmail(
+        booking.customer_email,
+        'bookingCancelled',
+        {
+          customerName: booking.customer_name,
+          bookingReference: booking.booking_reference
+        }
+      ).catch(err => console.error('Cancellation email error:', err));
+    } catch (emailErr) {
+      console.error('Failed to send cancellation email:', emailErr);
+    }
     
     res.json({ message: 'Booking cancelled successfully' });
     
@@ -500,7 +577,7 @@ app.get('/api/stats', async (req, res) => {
     const [events, upcoming, bookings, seats, bookedSeats] = await Promise.all([
       pool.query('SELECT COUNT(*) as total FROM events'),
       pool.query('SELECT COUNT(*) as upcoming FROM events WHERE date > NOW()'),
-      pool.query('SELECT COUNT(*) as total, SUM(total_amount) as revenue FROM bookings'),
+      pool.query('SELECT COUNT(*) as total, SUM(total_amount) as revenue FROM bookings WHERE status != $1', ['cancelled']),
       pool.query('SELECT COUNT(*) as total FROM seats'),
       pool.query('SELECT COUNT(*) as booked FROM seats WHERE status = $1', ['booked'])
     ]);
@@ -511,7 +588,10 @@ app.get('/api/stats', async (req, res) => {
       totalBookings: parseInt(bookings.rows[0].total) || 0,
       totalRevenue: parseFloat(bookings.rows[0].revenue) || 0,
       totalSeats: parseInt(seats.rows[0].total) || 0,
-      bookedSeats: parseInt(bookedSeats.rows[0].booked) || 0
+      bookedSeats: parseInt(bookedSeats.rows[0].booked) || 0,
+      occupancyRate: seats.rows[0].total > 0 
+        ? Math.round((bookedSeats.rows[0].booked / seats.rows[0].total) * 100) 
+        : 0
     });
     
   } catch (err) {
@@ -564,16 +644,47 @@ app.get('/api/health', async (req, res) => {
       status: 'OK', 
       timestamp: new Date().toISOString(),
       database: 'connected',
-      environment: process.env.NODE_ENV || 'development'
+      environment: process.env.NODE_ENV || 'development',
+      websocket: 'running'
     });
   } catch (err) {
     res.status(500).json({ 
       status: 'ERROR', 
       timestamp: new Date().toISOString(),
       database: 'disconnected',
-      error: err.message
+      error: err.message,
+      environment: process.env.NODE_ENV || 'development'
     });
   }
+});
+
+// Root endpoint (for testing)
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Stadium Ticketing API',
+    version: '1.0.0',
+    endpoints: {
+      events: '/api/events',
+      seats: '/api/seats/event/:eventId',
+      bookings: '/api/bookings',
+      admin: '/api/admin/login',
+      stats: '/api/stats',
+      health: '/api/health'
+    }
+  });
+});
+
+// ==================== ERROR HANDLING ====================
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
 });
 
 // ==================== START SERVER ====================
@@ -582,12 +693,22 @@ server.listen(PORT, () => {
   console.log(`\n🚀 Server running on port ${PORT}`);
   console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔌 WebSocket server running`);
-  console.log(`📊 Health check: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api/health\n`);
+  console.log(`📊 Health check: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api/health`);
+  console.log(`📝 API Root: ${process.env.BASE_URL || `http://localhost:${PORT}`}/\n`);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, closing connections...');
+  console.log('\n📴 SIGTERM received, closing connections...');
+  await pool.end();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  console.log('\n📴 SIGINT received, closing connections...');
   await pool.end();
   server.close(() => {
     console.log('Server closed');
