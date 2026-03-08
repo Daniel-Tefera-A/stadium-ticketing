@@ -13,6 +13,13 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
+  // Helper function to safely format price
+  const formatPrice = (price) => {
+    if (price === undefined || price === null) return '0.00';
+    const num = Number(price);
+    return isNaN(num) ? '0.00' : num.toFixed(2);
+  };
+
   useEffect(() => {
     let isMounted = true;
     
@@ -21,8 +28,17 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
         const response = await fetch(`${API_URL}/api/seats/event/${eventId}`);
         if (!response.ok) throw new Error('Failed to fetch seats');
         const data = await response.json();
+        
+        // Ensure all seats have valid numbers
+        const sanitizedData = data.map(seat => ({
+          ...seat,
+          price: Number(seat.price) || 0,
+          row_number: Number(seat.row_number) || 0,
+          seat_number: Number(seat.seat_number) || 0
+        }));
+        
         if (isMounted) {
-          setSeats(data);
+          setSeats(sanitizedData);
           setError(null);
         }
       } catch (err) {
@@ -58,7 +74,12 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
   const handleSeatUpdate = useCallback((update) => {
     setSeats(prev => prev.map(seat => 
       seat.id === update.seatId 
-        ? { ...seat, status: update.status, held_until: update.heldUntil }
+        ? { 
+            ...seat, 
+            status: update.status, 
+            held_until: update.heldUntil,
+            price: Number(seat.price) || 0 // Ensure price stays a number
+          }
         : seat
     ));
   }, []);
@@ -104,6 +125,23 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
     onSeatSelect(seat);
   };
 
+  const handleKeyDown = (e) => {
+    if (e.shiftKey) setSelectionMode('multiple');
+  };
+
+  const handleKeyUp = (e) => {
+    if (!e.shiftKey) setSelectionMode('single');
+  };
+
+  useEffect(() => {
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
   if (loading) return <div className="seatmap-loading">Loading seats...</div>;
   if (error) return <div className="seatmap-error">Error: {error}</div>;
   if (seats.length === 0) return <div className="seatmap-empty">No seats configured</div>;
@@ -132,28 +170,40 @@ const SeatMap = ({ eventId, onSeatSelect, selectedSeats = [], maxSelectable = 10
             <span>Held</span>
           </div>
         </div>
+        <div className="selection-mode">
+          Mode: {selectionMode === 'multiple' ? '🟢 Multiple' : '🔵 Single'}
+          <span className="mode-hint">(Hold Shift)</span>
+        </div>
       </div>
 
       <div className="stage-indicator">🎪 STAGE 🎪</div>
 
-      {Object.entries(groupedSeats).map(([section, rows]) => (
-        <div key={section} className="section">
-          <h3>{section}</h3>
+      {Object.entries(groupedSeats).map(([sectionName, rows]) => (
+        <div key={sectionName} className="section">
+          <h3 className="section-title">{sectionName}</h3>
           {Object.entries(rows).map(([rowNum, rowSeats]) => (
             <div key={rowNum} className="row">
               <span className="row-label">Row {rowNum}</span>
               <div className="seats">
-                {rowSeats.map(seat => (
-                  <button
-                    key={seat.id}
-                    type="button"
-                    className={`seat ${getSeatStatus(seat)}`}
-                    onClick={() => handleSeatClick(seat)}
-                    disabled={getSeatStatus(seat) === 'booked' || getSeatStatus(seat) === 'held'}
-                  >
-                    {seat.seat_number}
-                  </button>
-                ))}
+                {rowSeats.map(seat => {
+                  const status = getSeatStatus(seat);
+                  const price = Number(seat.price) || 0;
+                  
+                  return (
+                    <button
+                      key={seat.id}
+                      type="button"
+                      className={`seat ${status} ${hoveredSeat === seat.id ? 'hovered' : ''}`}
+                      onClick={() => handleSeatClick(seat)}
+                      onMouseEnter={() => setHoveredSeat(seat.id)}
+                      onMouseLeave={() => setHoveredSeat(null)}
+                      disabled={status === 'booked' || status === 'held'}
+                      title={`${seat.section} Row ${seat.row_number} Seat ${seat.seat_number}\nPrice: $${formatPrice(price)}`}
+                    >
+                      {seat.seat_number}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           ))}
