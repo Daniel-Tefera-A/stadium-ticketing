@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
 import './BookingCart.css';
 
+useEffect(() => {
+  console.log('Selected seats in cart:', selectedSeats);
+}, [selectedSeats]);
 const BookingCart = ({ selectedSeats, event, onRemoveSeat, onCheckout }) => {
   const [isExpanded, setIsExpanded] = useState(true);
 
