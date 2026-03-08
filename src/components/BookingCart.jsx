@@ -1,11 +1,13 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import './BookingCart.css';
 
-useEffect(() => {
-  console.log('Selected seats in cart:', selectedSeats);
-}, [selectedSeats]);
 const BookingCart = ({ selectedSeats, event, onRemoveSeat, onCheckout }) => {
   const [isExpanded, setIsExpanded] = useState(true);
+
+  // ✅ FIXED: useEffect inside the component, not floating outside
+  useEffect(() => {
+    console.log('Selected seats in cart:', selectedSeats);
+  }, [selectedSeats]);
 
   const calculateTotal = () => {
     return selectedSeats.reduce((sum, seat) => sum + seat.price, 0);
