@@ -4,9 +4,13 @@ import Navbar from './components/Navbar';
 import HomePage from './pages/HomePage';
 import EventDetailPage from './pages/EventDetailPage';
 import AdminPage from './pages/AdminPage';
-import NotFoundPage from './pages/NotFoundPage';
+import AdminDashboard from './pages/AdminDashboard';
+import AdminBookingsPage from './pages/AdminBookingsPage';
 import CheckoutPage from './pages/CheckoutPage';
 import BookingConfirmationPage from './pages/BookingConfirmationPage';
+import MyBookingsPage from './pages/MyBookingsPage';
+import NotFoundPage from './pages/NotFoundPage';
+import Week2Demo from './pages/Week2Demo';
 import './styles/App.css';
 
 function App() {
@@ -18,8 +22,12 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/event/:id" element={<EventDetailPage />} />
           <Route path="/admin" element={<AdminPage />} />
-<Route path="/checkout/:eventId" element={<CheckoutPage />} />
+          <Route path="/admin-dashboard" element={<AdminDashboard />} />
+          <Route path="/admin-bookings" element={<AdminBookingsPage />} />
+          <Route path="/checkout/:eventId" element={<CheckoutPage />} />
           <Route path="/confirmation/:bookingReference" element={<BookingConfirmationPage />} />
+          <Route path="/my-bookings" element={<MyBookingsPage />} />
+          <Route path="/week2-demo" element={<Week2Demo />} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
         <footer className="footer">
