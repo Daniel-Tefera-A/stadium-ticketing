@@ -1,6 +1,8 @@
+
 import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import LoadingSpinner from '../components/LoadingSpinner';
+import PDFTicket from '../components/PDFTicket';
 import './BookingConfirmationPage.css';
 
 const BookingConfirmationPage = () => {
@@ -9,16 +11,15 @@ const BookingConfirmationPage = () => {
   const navigate = useNavigate();
   const [booking, setBooking] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showPDF, setShowPDF] = useState(false);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
   useEffect(() => {
-    // If we have state from navigation, use it
     if (location.state) {
       setBooking(location.state);
       setLoading(false);
     } else {
-      // Otherwise fetch from API (for direct links/sharing)
       fetchBookingDetails();
     }
   }, [bookingReference]);
@@ -75,6 +76,14 @@ const BookingConfirmationPage = () => {
     );
   }
 
+  const event = booking.event || { 
+    name: booking.event_name, 
+    date: booking.event_date,
+    venue: booking.venue 
+  };
+
+  const seats = booking.selectedSeats || booking.seats || [];
+
   return (
     <div className="container">
       <div className="confirmation-container">
@@ -87,15 +96,15 @@ const BookingConfirmationPage = () => {
             <h3>Event Details</h3>
             <div className="detail-row">
               <span className="detail-label">Event:</span>
-              <span className="detail-value">{booking.event?.name || booking.event_name}</span>
+              <span className="detail-value">{event.name}</span>
             </div>
             <div className="detail-row">
               <span className="detail-label">Date:</span>
-              <span className="detail-value">{formatDate(booking.event?.date || booking.event_date)}</span>
+              <span className="detail-value">{formatDate(event.date)}</span>
             </div>
             <div className="detail-row">
               <span className="detail-label">Venue:</span>
-              <span className="detail-value">{booking.event?.venue || 'Main Stadium'}</span>
+              <span className="detail-value">{event.venue || 'Main Stadium'}</span>
             </div>
           </div>
 
@@ -118,7 +127,7 @@ const BookingConfirmationPage = () => {
           <div className="detail-section">
             <h3>Seat Details</h3>
             <div className="seats-list">
-              {(booking.selectedSeats || booking.seats || []).map((seat, index) => (
+              {seats.map((seat, index) => (
                 <div key={index} className="seat-item">
                   <span className="seat-section">{seat.section}</span>
                   <span className="seat-location">
@@ -149,11 +158,26 @@ const BookingConfirmationPage = () => {
           <button onClick={handlePrint} className="action-button print">
             🖨️ Print Ticket
           </button>
+          <button 
+            onClick={() => setShowPDF(true)} 
+            className="action-button pdf"
+          >
+            📥 Download PDF
+          </button>
           <button onClick={() => navigate('/')} className="action-button primary">
             Browse More Events
           </button>
         </div>
       </div>
+
+      {showPDF && (
+        <PDFTicket
+          booking={booking}
+          event={event}
+          seats={seats}
+          onClose={() => setShowPDF(false)}
+        />
+      )}
     </div>
   );
 };
