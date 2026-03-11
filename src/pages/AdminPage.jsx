@@ -198,9 +198,17 @@ const AdminPage = () => {
       <div className="admin-container">
         <div className="admin-header">
           <h2>Admin Dashboard</h2>
-          <button onClick={handleLogout} className="logout-button">
-            Logout
-          </button>
+          <div>
+            <button 
+              onClick={() => navigate('/admin-dashboard')} 
+              className="dashboard-btn"
+            >
+              📊 View Analytics
+            </button>
+            <button onClick={handleLogout} className="logout-button">
+              Logout
+            </button>
+          </div>
         </div>
 
         {message.text && (
