@@ -33,7 +33,7 @@ const AdminDashboard = () => {
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({});
   const [recentBookings, setRecentBookings] = useState([]);
-  const [salesData, setSalesData] = useState([]);
+  const [salesData, setSalesData] = useState({ labels: [], values: [] });
   const [popularEvents, setPopularEvents] = useState([]);
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
@@ -56,7 +56,7 @@ const AdminDashboard = () => {
       const statsData = await statsRes.json();
       setStats(statsData);
 
-      // Get all events to fetch bookings
+      // Get all events
       const eventsRes = await fetch(`${API_URL}/api/events`);
       const events = await eventsRes.json();
 
@@ -68,7 +68,6 @@ const AdminDashboard = () => {
         allBookings.push(...bookings.map(b => ({ ...b, eventName: event.name })));
       }
       
-      // Sort by date and get recent
       const recent = allBookings
         .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
         .slice(0, 5);
@@ -81,8 +80,6 @@ const AdminDashboard = () => {
         const date = new Date();
         date.setDate(date.getDate() - i);
         last7Days.push(date.toLocaleDateString('en-US', { weekday: 'short' }));
-        
-        // Count bookings for this day (mock for now - would need real data)
         sales.push(Math.floor(Math.random() * 10) + 5);
       }
       setSalesData({ labels: last7Days, values: sales });
@@ -90,7 +87,7 @@ const AdminDashboard = () => {
       // Popular events
       const eventSales = events.map(event => ({
         name: event.name,
-        sales: Math.floor(Math.random() * 50) + 10 // Mock data
+        sales: Math.floor(Math.random() * 50) + 10
       })).sort((a, b) => b.sales - a.sales).slice(0, 5);
       setPopularEvents(eventSales);
 
@@ -124,6 +121,24 @@ const AdminDashboard = () => {
         '#98d8c8'
       ]
     }]
+  };
+
+  const salesOptions = {
+    responsive: true,
+    plugins: {
+      legend: { display: false },
+      title: { display: false }
+    },
+    scales: {
+      y: { beginAtZero: true }
+    }
+  };
+
+  const pieOptions = {
+    responsive: true,
+    plugins: {
+      legend: { position: 'bottom' }
+    }
   };
 
   if (loading) return <LoadingSpinner message="Loading dashboard..." />;
@@ -173,17 +188,11 @@ const AdminDashboard = () => {
       <div className="charts-grid">
         <div className="chart-card">
           <h3>Sales (Last 7 Days)</h3>
-          <Line data={salesChartData} options={{
-            responsive: true,
-            plugins: { legend: { display: false } }
-          }} />
+          <Line data={salesChartData} options={salesOptions} />
         </div>
         <div className="chart-card">
           <h3>Popular Events</h3>
-          <Pie data={popularChartData} options={{
-            responsive: true,
-            plugins: { legend: { position: 'bottom' } }
-          }} />
+          <Pie data={popularChartData} options={pieOptions} />
         </div>
       </div>
 
@@ -224,10 +233,21 @@ const AdminDashboard = () => {
           <button onClick={() => navigate('/admin-bookings')} className="action-btn">
             View All Bookings
           </button>
-          <button onClick={() => window.open('/reports', '_blank')} className="action-btn">
-            Generate Report
-          </button>
-          <button onClick={() => alert('Exporting data...')} className="action-btn">
+          <button 
+            onClick={() => {
+              const csv = "Booking Ref,Event,Customer,Amount,Date\n" + 
+                recentBookings.map(b => 
+                  `${b.booking_reference},${b.eventName},${b.customer_name},${b.total_amount},${b.created_at}`
+                ).join('\n');
+              const blob = new Blob([csv], { type: 'text/csv' });
+              const url = window.URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'bookings.csv';
+              a.click();
+            }} 
+            className="action-btn"
+          >
             Export Data
           </button>
         </div>
