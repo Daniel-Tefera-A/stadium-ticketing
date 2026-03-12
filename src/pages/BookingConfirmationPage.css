@@ -209,6 +209,16 @@
   }
 }
 
+/* Add to BookingConfirmationPage.css */
+.action-button.pdf {
+  background: #4caf50;
+  color: white;
+}
+
+.action-button.pdf:hover {
+  background: #45a049;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .confirmation-container {
