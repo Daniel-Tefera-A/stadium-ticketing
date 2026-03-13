@@ -1,13 +1,103 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { loadStripe } from '@stripe/stripe-js';
+import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js';
 import LoadingSpinner from '../components/LoadingSpinner';
 import './CheckoutPage.css';
+
+// Load Stripe
+const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_KEY);
+
+const CheckoutForm = ({ amount, onSuccess, onError, bookingData, onSubmit }) => {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [processing, setProcessing] = useState(false);
+  const [cardError, setCardError] = useState('');
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setProcessing(true);
+    setCardError('');
+
+    if (!stripe || !elements) {
+      setProcessing(false);
+      return;
+    }
+
+    const cardElement = elements.getElement(CardElement);
+
+    const { error, paymentMethod } = await stripe.createPaymentMethod({
+      type: 'card',
+      card: cardElement,
+    });
+
+    if (error) {
+      setCardError(error.message);
+      setProcessing(false);
+    } else {
+      // First create payment intent
+      try {
+        const paymentResponse = await fetch(`${import.meta.env.VITE_API_URL}/api/create-payment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paymentMethodId: paymentMethod.id,
+            amount: amount
+          })
+        });
+
+        const paymentData = await paymentResponse.json();
+
+        if (paymentData.success) {
+          // Then create booking
+          onSubmit();
+        } else {
+          onError(paymentData.error);
+        }
+      } catch (err) {
+        setCardError('Payment failed. Please try again.');
+      }
+      setProcessing(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="stripe-form">
+      <div className="form-group">
+        <label>Card Details</label>
+        <div className="card-element-container">
+          <CardElement options={{
+            style: {
+              base: {
+                fontSize: '16px',
+                color: '#424770',
+                '::placeholder': { color: '#aab7c4' }
+              },
+              invalid: { color: '#9e2146' }
+            }
+          }} />
+        </div>
+        {cardError && <div className="error-message">{cardError}</div>}
+      </div>
+      
+      <button 
+        type="submit" 
+        className="pay-button"
+        disabled={!stripe || processing}
+      >
+        {processing ? <LoadingSpinner message="Processing..." /> : `Pay $${amount.toFixed(2)}`}
+      </button>
+    </form>
+  );
+};
 
 const CheckoutPage = () => {
   const { eventId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
+  const [showPayment, setShowPayment] = useState(false);
+  const [paymentError, setPaymentError] = useState('');
   const [formData, setFormData] = useState({
     customerName: '',
     customerEmail: '',
@@ -16,11 +106,10 @@ const CheckoutPage = () => {
   });
   const [errors, setErrors] = useState({});
 
-  // Get state from navigation (passed from EventDetailPage)
+  // Get state from navigation
   const { selectedSeats, event, totalAmount } = location.state || {};
 
   useEffect(() => {
-    // Redirect if no seats selected (direct access to checkout)
     if (!selectedSeats || selectedSeats.length === 0) {
       navigate(`/event/${eventId}`);
     }
@@ -33,7 +122,7 @@ const CheckoutPage = () => {
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3000';
 
   const calculateFees = () => {
-    return totalAmount * 0.1; // 10% service fee
+    return totalAmount * 0.1;
   };
 
   const calculateGrandTotal = () => {
@@ -59,8 +148,6 @@ const CheckoutPage = () => {
 
     if (!formData.customerPhone.trim()) {
       newErrors.customerPhone = 'Phone number is required';
-    } else if (!/^[\d\s\+\-\(\)]{10,}$/.test(formData.customerPhone)) {
-      newErrors.customerPhone = 'Please enter a valid phone number';
     }
 
     setErrors(newErrors);
@@ -73,29 +160,13 @@ const CheckoutPage = () => {
       ...prev,
       [name]: value
     }));
-    // Clear error for this field when user types
     if (errors[name]) {
-      setErrors(prev => ({
-        ...prev,
-        [name]: null
-      }));
+      setErrors(prev => ({ ...prev, [name]: null }));
     }
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-
-    if (!validateForm()) {
-      // Scroll to first error
-      const firstError = document.querySelector('.error-message');
-      if (firstError) {
-        firstError.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-      return;
-    }
-
+  const createBooking = async () => {
     setLoading(true);
-
     try {
       const bookingData = {
         eventId: parseInt(eventId),
@@ -111,20 +182,15 @@ const CheckoutPage = () => {
         }))
       };
 
-      console.log('Submitting booking:', bookingData);
-
       const response = await fetch(`${API_URL}/api/bookings`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(bookingData)
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        // Success! Navigate to confirmation page
         navigate(`/confirmation/${data.bookingReference}`, {
           state: {
             bookingReference: data.bookingReference,
@@ -135,14 +201,19 @@ const CheckoutPage = () => {
           }
         });
       } else {
-        alert(data.error || 'Booking failed. Please try again.');
+        alert(data.error || 'Booking failed');
       }
     } catch (error) {
-      console.error('Checkout error:', error);
-      alert('An error occurred. Please check your connection and try again.');
+      alert('An error occurred');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+    setShowPayment(true);
   };
 
   const formatDate = (dateString) => {
@@ -201,96 +272,95 @@ const CheckoutPage = () => {
             </div>
 
             <div className="checkout-note">
-              <p>⏰ Seats are held for 10 minutes. Complete booking to confirm.</p>
+              <p>⏰ Seats are held for 10 minutes</p>
             </div>
           </div>
 
-          {/* Customer Information Form */}
+          {/* Customer Information & Payment */}
           <div className="checkout-form">
-            <h2>Your Information</h2>
-            <form onSubmit={handleSubmit}>
-              <div className="form-group">
-                <label htmlFor="customerName">Full Name *</label>
-                <input
-                  type="text"
-                  id="customerName"
-                  name="customerName"
-                  value={formData.customerName}
-                  onChange={handleInputChange}
-                  className={errors.customerName ? 'error' : ''}
-                  disabled={loading}
-                  placeholder="John Doe"
-                />
-                {errors.customerName && (
-                  <div className="error-message">{errors.customerName}</div>
-                )}
-              </div>
+            {!showPayment ? (
+              <>
+                <h2>Your Information</h2>
+                <form onSubmit={handleSubmit}>
+                  <div className="form-group">
+                    <label>Full Name *</label>
+                    <input
+                      type="text"
+                      name="customerName"
+                      value={formData.customerName}
+                      onChange={handleInputChange}
+                      className={errors.customerName ? 'error' : ''}
+                      placeholder="John Doe"
+                    />
+                    {errors.customerName && <div className="error-message">{errors.customerName}</div>}
+                  </div>
 
-              <div className="form-group">
-                <label htmlFor="customerEmail">Email Address *</label>
-                <input
-                  type="email"
-                  id="customerEmail"
-                  name="customerEmail"
-                  value={formData.customerEmail}
-                  onChange={handleInputChange}
-                  className={errors.customerEmail ? 'error' : ''}
-                  disabled={loading}
-                  placeholder="john@example.com"
-                />
-                {errors.customerEmail && (
-                  <div className="error-message">{errors.customerEmail}</div>
-                )}
-              </div>
+                  <div className="form-group">
+                    <label>Email *</label>
+                    <input
+                      type="email"
+                      name="customerEmail"
+                      value={formData.customerEmail}
+                      onChange={handleInputChange}
+                      className={errors.customerEmail ? 'error' : ''}
+                      placeholder="john@example.com"
+                    />
+                    {errors.customerEmail && <div className="error-message">{errors.customerEmail}</div>}
+                  </div>
 
-              <div className="form-group">
-                <label htmlFor="confirmEmail">Confirm Email *</label>
-                <input
-                  type="email"
-                  id="confirmEmail"
-                  name="confirmEmail"
-                  value={formData.confirmEmail}
-                  onChange={handleInputChange}
-                  className={errors.confirmEmail ? 'error' : ''}
-                  disabled={loading}
-                  placeholder="john@example.com"
-                />
-                {errors.confirmEmail && (
-                  <div className="error-message">{errors.confirmEmail}</div>
-                )}
-              </div>
+                  <div className="form-group">
+                    <label>Confirm Email *</label>
+                    <input
+                      type="email"
+                      name="confirmEmail"
+                      value={formData.confirmEmail}
+                      onChange={handleInputChange}
+                      className={errors.confirmEmail ? 'error' : ''}
+                      placeholder="john@example.com"
+                    />
+                    {errors.confirmEmail && <div className="error-message">{errors.confirmEmail}</div>}
+                  </div>
 
-              <div className="form-group">
-                <label htmlFor="customerPhone">Phone Number *</label>
-                <input
-                  type="tel"
-                  id="customerPhone"
-                  name="customerPhone"
-                  value={formData.customerPhone}
-                  onChange={handleInputChange}
-                  className={errors.customerPhone ? 'error' : ''}
-                  disabled={loading}
-                  placeholder="+1 234 567 8900"
-                />
-                {errors.customerPhone && (
-                  <div className="error-message">{errors.customerPhone}</div>
-                )}
-              </div>
+                  <div className="form-group">
+                    <label>Phone *</label>
+                    <input
+                      type="tel"
+                      name="customerPhone"
+                      value={formData.customerPhone}
+                      onChange={handleInputChange}
+                      className={errors.customerPhone ? 'error' : ''}
+                      placeholder="+1 234 567 8900"
+                    />
+                    {errors.customerPhone && <div className="error-message">{errors.customerPhone}</div>}
+                  </div>
 
-              <button 
-                type="submit" 
-                className="submit-btn"
-                disabled={loading}
-              >
-                {loading ? <LoadingSpinner message="Processing..." /> : 'Confirm & Pay'}
-              </button>
-
-              <p className="terms-note">
-                By completing this booking, you agree to our 
-                <a href="/terms"> Terms of Service</a> and 
-                <a href="/privacy"> Privacy Policy</a>.
-              </p>
-            </form>
+                  <button type="submit" className="submit-btn">
+                    Continue to Payment
+                  </button>
+                </form>
+              </>
+            ) : (
+              <>
+                <h2>Payment Details</h2>
+                <Elements stripe={stripePromise}>
+                  <CheckoutForm
+                    amount={calculateGrandTotal()}
+                    onSuccess={() => {}}
+                    onError={setPaymentError}
+                    onSubmit={createBooking}
+                  />
+                </Elements>
+                {paymentError && <div className="error-message">{paymentError}</div>}
+                
+                <button 
+                  onClick={() => setShowPayment(false)} 
+                  className="back-btn"
+                  style={{ marginTop: '1rem' }}
+                >
+                  ← Back to Information
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>
