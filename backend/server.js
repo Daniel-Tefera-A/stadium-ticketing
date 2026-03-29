@@ -1,5 +1,6 @@
 const express = require('express');
 const { Pool } = require('pg');
+const sqlite3 = require('sqlite3').verbose();
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const http = require('http');
@@ -11,23 +12,277 @@ require('dotenv').config();
 const app = express();
 const server = http.createServer(app);
 
-// PostgreSQL connection pool
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// ==================== DATABASE SELECTION ====================
+// Choose database based on environment and availability
+let db;
+let isPostgreSQL = false;
 
-// Test database connection
-pool.connect((err, client, release) => {
-  if (err) {
-    console.error('❌ Database connection error:', err.stack);
-  } else {
-    console.log('✅ Connected to PostgreSQL database');
-    release();
+// Function to test PostgreSQL connection
+async function testPostgreSQLConnection() {
+  if (!process.env.DATABASE_URL) return false;
+  
+  const testPool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+    connectionTimeoutMillis: 5000
+  });
+  
+  try {
+    await testPool.connect();
+    await testPool.end();
+    return true;
+  } catch (err) {
+    console.log('PostgreSQL not available, using SQLite fallback');
+    return false;
   }
-});
+}
 
-// Socket.IO setup
+// Initialize appropriate database
+async function initDatabase() {
+  const postgresAvailable = await testPostgreSQLConnection();
+  
+  if (postgresAvailable && process.env.NODE_ENV === 'production') {
+    // Use PostgreSQL for production
+    isPostgreSQL = true;
+    db = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
+    });
+    console.log('✅ Using PostgreSQL database (Production mode)');
+    await createPostgresTables();
+  } else {
+    // Use SQLite for offline/local development
+    isPostgreSQL = false;
+    const sqlitePath = process.env.SQLITE_PATH || './database.db';
+    db = new sqlite3.Database(sqlitePath, (err) => {
+      if (err) {
+        console.error('SQLite connection error:', err);
+      } else {
+        console.log('✅ Using SQLite database (Offline/Local mode)');
+      }
+    });
+    createSQLiteTables();
+  }
+}
+
+// ==================== POSTGRESQL TABLES ====================
+async function createPostgresTables() {
+  try {
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS events (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        date TIMESTAMP NOT NULL,
+        description TEXT,
+        image_url TEXT,
+        base_price DECIMAL(10,2) DEFAULT 0,
+        venue VARCHAR(255) DEFAULT 'Main Stadium',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS admins (
+        id SERIAL PRIMARY KEY,
+        username VARCHAR(100) UNIQUE NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id SERIAL PRIMARY KEY,
+        event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+        customer_name VARCHAR(255) NOT NULL,
+        customer_email VARCHAR(255) NOT NULL,
+        customer_phone VARCHAR(50),
+        total_amount DECIMAL(10,2) NOT NULL,
+        booking_reference VARCHAR(50) UNIQUE NOT NULL,
+        status VARCHAR(50) DEFAULT 'confirmed',
+        payment_status VARCHAR(50) DEFAULT 'pending',
+        payment_method VARCHAR(50),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS seats (
+        id SERIAL PRIMARY KEY,
+        event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+        section VARCHAR(100) NOT NULL,
+        row_number INTEGER NOT NULL,
+        seat_number INTEGER NOT NULL,
+        price DECIMAL(10,2) NOT NULL,
+        status VARCHAR(50) DEFAULT 'available',
+        held_until TIMESTAMP,
+        booking_id INTEGER REFERENCES bookings(id) ON DELETE SET NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    console.log('✅ PostgreSQL tables ready');
+    await initializeSampleData();
+  } catch (err) {
+    console.error('Error creating PostgreSQL tables:', err);
+  }
+}
+
+// ==================== SQLITE TABLES ====================
+function createSQLiteTables() {
+  db.serialize(() => {
+    db.run(`
+      CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        date TEXT NOT NULL,
+        description TEXT,
+        image_url TEXT,
+        base_price REAL DEFAULT 0,
+        venue TEXT DEFAULT 'Main Stadium',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    db.run(`
+      CREATE TABLE IF NOT EXISTS admins (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    db.run(`
+      CREATE TABLE IF NOT EXISTS bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id INTEGER NOT NULL,
+        customer_name TEXT NOT NULL,
+        customer_email TEXT NOT NULL,
+        customer_phone TEXT,
+        total_amount REAL NOT NULL,
+        booking_reference TEXT UNIQUE NOT NULL,
+        status TEXT DEFAULT 'confirmed',
+        payment_status TEXT DEFAULT 'pending',
+        payment_method TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (event_id) REFERENCES events (id)
+      )
+    `);
+    
+    db.run(`
+      CREATE TABLE IF NOT EXISTS seats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_id INTEGER NOT NULL,
+        section TEXT NOT NULL,
+        row_number INTEGER NOT NULL,
+        seat_number INTEGER NOT NULL,
+        price REAL NOT NULL,
+        status TEXT DEFAULT 'available',
+        held_until DATETIME,
+        booking_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (event_id) REFERENCES events (id) ON DELETE CASCADE,
+        FOREIGN KEY (booking_id) REFERENCES bookings (id)
+      )
+    `);
+    
+    console.log('✅ SQLite tables ready');
+    initializeSampleData();
+  });
+}
+
+// ==================== SAMPLE DATA ====================
+async function initializeSampleData() {
+  if (isPostgreSQL) {
+    // Check if events exist
+    const eventsCheck = await db.query('SELECT COUNT(*) FROM events');
+    if (parseInt(eventsCheck.rows[0].count) === 0) {
+      const sampleEvents = [
+        ['Summer Music Festival', '2024-06-15 18:00:00', 'Annual music festival', null, 50, 'Main Stadium'],
+        ['International Football Match', '2024-06-20 20:00:00', 'Championship Final', null, 75, 'Main Stadium'],
+        ['Comedy Night', '2024-06-25 19:30:00', 'Stand-up comedy', null, 35, 'Comedy Hall']
+      ];
+      
+      for (const event of sampleEvents) {
+        await db.query(
+          'INSERT INTO events (name, date, description, image_url, base_price, venue) VALUES ($1, $2, $3, $4, $5, $6)',
+          event
+        );
+      }
+      console.log('✅ Sample events added');
+    }
+    
+    // Check if admin exists
+    const adminCheck = await db.query('SELECT COUNT(*) FROM admins WHERE username = $1', ['admin']);
+    if (parseInt(adminCheck.rows[0].count) === 0) {
+      const hashedPassword = await bcrypt.hash('admin123', 10);
+      await db.query('INSERT INTO admins (username, password_hash) VALUES ($1, $2)', ['admin', hashedPassword]);
+      console.log('✅ Admin created (admin/admin123)');
+    }
+  } else {
+    // SQLite sample data
+    db.get("SELECT COUNT(*) as count FROM events", (err, row) => {
+      if (row && row.count === 0) {
+        const sampleEvents = [
+          ['Summer Music Festival', '2024-06-15 18:00', 'Annual music festival', null, 50, 'Main Stadium'],
+          ['International Football Match', '2024-06-20 20:00', 'Championship Final', null, 75, 'Main Stadium'],
+          ['Comedy Night', '2024-06-25 19:30', 'Stand-up comedy', null, 35, 'Comedy Hall']
+        ];
+        
+        const stmt = db.prepare('INSERT INTO events (name, date, description, image_url, base_price, venue) VALUES (?, ?, ?, ?, ?, ?)');
+        sampleEvents.forEach(event => stmt.run(event));
+        stmt.finalize();
+        console.log('✅ Sample events added');
+      }
+    });
+    
+    db.get("SELECT COUNT(*) as count FROM admins WHERE username = 'admin'", (err, row) => {
+      if (row && row.count === 0) {
+        const hashedPassword = bcrypt.hashSync('admin123', 10);
+        db.run('INSERT INTO admins (username, password_hash) VALUES (?, ?)', ['admin', hashedPassword]);
+        console.log('✅ Admin created (admin/admin123)');
+      }
+    });
+  }
+}
+
+// ==================== HELPER FUNCTIONS ====================
+function generateBookingReference() {
+  return 'BK' + Date.now().toString(36).toUpperCase() + Math.random().toString(36).substring(2, 7).toUpperCase();
+}
+
+function formatEventDate(dateString) {
+  return new Date(dateString).toLocaleString('en-US', {
+    weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
+    hour: '2-digit', minute: '2-digit'
+  });
+}
+
+// ==================== QUERY WRAPPER ====================
+// This makes both PostgreSQL and SQLite work with the same code
+async function query(sql, params = []) {
+  if (isPostgreSQL) {
+    const result = await db.query(sql, params);
+    return { rows: result.rows };
+  } else {
+    return new Promise((resolve, reject) => {
+      if (sql.trim().toUpperCase().startsWith('SELECT')) {
+        db.all(sql, params, (err, rows) => {
+          if (err) reject(err);
+          else resolve({ rows: rows });
+        });
+      } else {
+        db.run(sql, params, function(err) {
+          if (err) reject(err);
+          else resolve({ lastID: this.lastID, changes: this.changes });
+        });
+      }
+    });
+  }
+}
+
+// ==================== SOCKET.IO SETUP ====================
 const io = socketIo(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production' 
@@ -41,52 +296,23 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 3000;
 
 // CORS configuration
-const corsOptions = {
+app.use(cors({
   origin: process.env.NODE_ENV === 'production'
     ? [process.env.FRONTEND_URL]
     : ["http://localhost:5173", "http://localhost:3000"],
-  credentials: true,
-  optionsSuccessStatus: 200
-};
-
-// Middleware
-app.use(cors(corsOptions));
+  credentials: true
+}));
 app.use(express.json());
 app.use(express.static('public'));
 
-// ==================== HELPER FUNCTIONS ====================
-
-// Generate unique booking reference
-function generateBookingReference() {
-  const prefix = 'BK';
-  const timestamp = Date.now().toString(36).toUpperCase();
-  const random = Math.random().toString(36).substring(2, 7).toUpperCase();
-  return `${prefix}${timestamp}${random}`;
-}
-
-// Format date for email
-function formatEventDate(dateString) {
-  return new Date(dateString).toLocaleString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit'
-  });
-}
-
-// ==================== EVENTS ROUTES ====================
+// ==================== API ROUTES ====================
 
 // Get all events
 app.get('/api/events', async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM events ORDER BY date'
-    );
+    const result = await query('SELECT * FROM events ORDER BY date');
     res.json(result.rows);
   } catch (err) {
-    console.error('Error fetching events:', err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -94,11 +320,7 @@ app.get('/api/events', async (req, res) => {
 // Get single event
 app.get('/api/events/:id', async (req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT * FROM events WHERE id = $1',
-      [req.params.id]
-    );
-    
+    const result = await query('SELECT * FROM events WHERE id = ?', [req.params.id]);
     if (result.rows.length === 0) {
       res.status(404).json({ error: 'Event not found' });
     } else {
@@ -112,42 +334,15 @@ app.get('/api/events/:id', async (req, res) => {
 // Create event
 app.post('/api/events', async (req, res) => {
   const { name, date, description, image_url, base_price, venue } = req.body;
-  
   if (!name || !date) {
     return res.status(400).json({ error: 'Name and date are required' });
   }
-
   try {
-    const result = await pool.query(
-      'INSERT INTO events (name, date, description, image_url, base_price, venue) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+    const result = await query(
+      'INSERT INTO events (name, date, description, image_url, base_price, venue) VALUES (?, ?, ?, ?, ?, ?)',
       [name, date, description, image_url || null, base_price || 0, venue || 'Main Stadium']
     );
-    
-    res.status(201).json({ 
-      id: result.rows[0].id,
-      message: 'Event created successfully' 
-    });
-  } catch (err) {
-    console.error('Error creating event:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Update event
-app.put('/api/events/:id', async (req, res) => {
-  const { name, date, description, image_url, base_price, venue } = req.body;
-  
-  try {
-    const result = await pool.query(
-      'UPDATE events SET name = $1, date = $2, description = $3, image_url = $4, base_price = $5, venue = $6 WHERE id = $7',
-      [name, date, description, image_url, base_price, venue, req.params.id]
-    );
-    
-    if (result.rowCount === 0) {
-      res.status(404).json({ error: 'Event not found' });
-    } else {
-      res.json({ message: 'Event updated successfully' });
-    }
+    res.status(201).json({ id: result.lastID, message: 'Event created' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -156,46 +351,25 @@ app.put('/api/events/:id', async (req, res) => {
 // Delete event
 app.delete('/api/events/:id', async (req, res) => {
   try {
-    const result = await pool.query(
-      'DELETE FROM events WHERE id = $1',
-      [req.params.id]
-    );
-    
-    if (result.rowCount === 0) {
-      res.status(404).json({ error: 'Event not found' });
-    } else {
-      res.json({ message: 'Event deleted successfully' });
-    }
+    await query('DELETE FROM events WHERE id = ?', [req.params.id]);
+    res.json({ message: 'Event deleted' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ==================== ADMIN ROUTES ====================
-
 // Admin login
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body;
-  
   try {
-    const result = await pool.query(
-      'SELECT * FROM admins WHERE username = $1',
-      [username]
-    );
-    
+    const result = await query('SELECT * FROM admins WHERE username = ?', [username]);
     if (result.rows.length === 0) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
-    
     const admin = result.rows[0];
     const validPassword = await bcrypt.compare(password, admin.password_hash);
-    
     if (validPassword) {
-      res.json({ 
-        success: true, 
-        message: 'Login successful',
-        admin: { id: admin.id, username: admin.username }
-      });
+      res.json({ success: true, message: 'Login successful' });
     } else {
       res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -204,510 +378,124 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
-// ==================== SEATS ROUTES ====================
-
-// Get all seats for an event
+// Get seats for event
 app.get('/api/seats/event/:eventId', async (req, res) => {
-  const { eventId } = req.params;
-  
   try {
-    const result = await pool.query(
-      'SELECT * FROM seats WHERE event_id = $1 ORDER BY section, row_number, seat_number',
-      [eventId]
-    );
+    const result = await query('SELECT * FROM seats WHERE event_id = ? ORDER BY section, row_number, seat_number', [req.params.eventId]);
     res.json(result.rows);
   } catch (err) {
-    console.error('Error fetching seats:', err);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Generate seats for an event
+// Generate seats
 app.post('/api/seats/generate/:eventId', async (req, res) => {
   const { eventId } = req.params;
   const { sections } = req.body;
-
-  if (!sections || !Array.isArray(sections)) {
-    return res.status(400).json({ error: 'Sections array is required' });
-  }
-
-  const client = await pool.connect();
   
   try {
-    await client.query('BEGIN');
-    
-    // Delete existing seats
-    await client.query('DELETE FROM seats WHERE event_id = $1', [eventId]);
-    
-    // Insert new seats
+    await query('DELETE FROM seats WHERE event_id = ?', [eventId]);
     let totalSeats = 0;
-    
     for (const section of sections) {
-      if (!section.name || !section.rows || !section.seatsPerRow || !section.price) {
-        throw new Error('Invalid section data');
-      }
-      
       for (let row = 1; row <= section.rows; row++) {
         for (let seat = 1; seat <= section.seatsPerRow; seat++) {
-          await client.query(
-            'INSERT INTO seats (event_id, section, row_number, seat_number, price) VALUES ($1, $2, $3, $4, $5)',
+          await query(
+            'INSERT INTO seats (event_id, section, row_number, seat_number, price) VALUES (?, ?, ?, ?, ?)',
             [eventId, section.name, row, seat, section.price]
           );
           totalSeats++;
         }
       }
     }
-    
-    await client.query('COMMIT');
-    
-    // Emit event that seats were generated
-    io.to(`event-${eventId}`).emit('seats-generated', { eventId });
-    
-    res.json({ 
-      message: 'Seats generated successfully',
-      totalSeats 
-    });
-    
+    res.json({ message: 'Seats generated', totalSeats });
   } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error generating seats:', err);
     res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
   }
 });
 
-// Update seat status (hold/release/book)
+// Update seat status
 app.patch('/api/seats/:seatId/status', async (req, res) => {
   const { seatId } = req.params;
-  const { status, heldUntil, bookingId, eventId } = req.body;
-
+  const { status, heldUntil, eventId } = req.body;
   try {
-    const result = await pool.query(
-      `UPDATE seats 
-       SET status = $1, held_until = $2, booking_id = $3 
-       WHERE id = $4 
-       RETURNING *`,
-      [status, heldUntil || null, bookingId || null, seatId]
-    );
-    
-    if (result.rowCount === 0) {
-      return res.status(404).json({ error: 'Seat not found' });
-    }
-    
-    // Emit update to all clients in the event room
-    io.to(`event-${eventId || result.rows[0].event_id}`).emit('seat-update', {
-      seatId: parseInt(seatId),
-      status,
-      heldUntil,
-      seat: result.rows[0]
-    });
-    
-    res.json({ 
-      message: 'Seat status updated successfully',
-      seatId: parseInt(seatId)
-    });
-    
-  } catch (err) {
-    console.error('Error updating seat status:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Update seat price
-app.patch('/api/seats/:seatId/price', async (req, res) => {
-  const { seatId } = req.params;
-  const { price } = req.body;
-
-  if (!price || price < 0) {
-    return res.status(400).json({ error: 'Valid price is required' });
-  }
-
-  try {
-    const result = await pool.query(
-      'UPDATE seats SET price = $1 WHERE id = $2',
-      [price, seatId]
-    );
-    
-    if (result.rowCount === 0) {
-      res.status(404).json({ error: 'Seat not found' });
-    } else {
-      res.json({ message: 'Seat price updated successfully' });
-    }
+    await query('UPDATE seats SET status = ?, held_until = ? WHERE id = ?', [status, heldUntil || null, seatId]);
+    io.to(`event-${eventId}`).emit('seat-update', { seatId: parseInt(seatId), status, heldUntil });
+    res.json({ message: 'Seat status updated' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Bulk update seat prices by section
-app.patch('/api/seats/event/:eventId/section/:section/price', async (req, res) => {
-  const { eventId, section } = req.params;
-  const { price } = req.body;
-
-  try {
-    const result = await pool.query(
-      'UPDATE seats SET price = $1 WHERE event_id = $2 AND section = $3',
-      [price, eventId, section]
-    );
-    
-    res.json({ 
-      message: 'Section prices updated successfully',
-      affectedRows: result.rowCount
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// ==================== BOOKINGS ROUTES ====================
-
-// Create a booking
+// Create booking
 app.post('/api/bookings', async (req, res) => {
   const { eventId, customerName, customerEmail, customerPhone, seats } = req.body;
-  
-  if (!eventId || !customerName || !customerEmail || !seats || seats.length === 0) {
-    return res.status(400).json({ error: 'Missing required fields' });
-  }
-
   const bookingRef = generateBookingReference();
   const totalAmount = seats.reduce((sum, seat) => sum + seat.price, 0);
-  const totalWithFees = totalAmount * 1.1;
-
-  const client = await pool.connect();
   
   try {
-    await client.query('BEGIN');
-    
-    // Insert booking
-    const bookingResult = await client.query(
-      `INSERT INTO bookings 
-       (event_id, customer_name, customer_email, customer_phone, total_amount, booking_reference) 
-       VALUES ($1, $2, $3, $4, $5, $6) 
-       RETURNING id`,
-      [eventId, customerName, customerEmail, customerPhone, totalWithFees, bookingRef]
+    const result = await query(
+      'INSERT INTO bookings (event_id, customer_name, customer_email, customer_phone, total_amount, booking_reference) VALUES (?, ?, ?, ?, ?, ?)',
+      [eventId, customerName, customerEmail, customerPhone, totalAmount, bookingRef]
     );
+    const bookingId = result.lastID;
     
-    const bookingId = bookingResult.rows[0].id;
-    
-    // Update seats
     for (const seat of seats) {
-      await client.query(
-        `UPDATE seats 
-         SET status = 'booked', booking_id = $1, held_until = NULL 
-         WHERE id = $2`,
-        [bookingId, seat.id]
-      );
+      await query('UPDATE seats SET status = "booked", booking_id = ? WHERE id = ?', [bookingId, seat.id]);
     }
     
-    await client.query('COMMIT');
-    
-    // Emit updates for all booked seats
-    seats.forEach(seat => {
-      io.to(`event-${eventId}`).emit('seat-update', {
-        seatId: seat.id,
-        status: 'booked',
-        bookingId: bookingId
-      });
-    });
-    
-    // Get event details for email
-    const eventResult = await client.query(
-      'SELECT * FROM events WHERE id = $1',
-      [eventId]
-    );
-    const event = eventResult.rows[0];
-
-    const seatList = seats.map(s => ({
-      section: s.section,
-      row: s.row_number || s.row,
-      seat: s.seat_number || s.seat
-    }));
-
-    // Send email confirmation with PDF (don't await - don't block response)
-    sendEmail(
-      customerEmail,
-      'bookingConfirmation',
-      {
-        customerName,
-        customerEmail,
-        bookingReference: bookingRef,
-        eventName: event.name,
-        eventDate: formatEventDate(event.date),
-        venue: event.venue || 'Main Stadium',
-        seats: seatList,
-        total: totalWithFees.toFixed(2)
-      }
-    ).catch(err => console.error('Email error:', err));
-    
-    res.status(201).json({
-      message: 'Booking created successfully',
-      bookingId,
-      bookingReference: bookingRef,
-      totalAmount: totalWithFees.toFixed(2)
-    });
-    
+    res.status(201).json({ bookingReference: bookingRef, totalAmount: totalAmount * 1.1 });
   } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error creating booking:', err);
     res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
   }
 });
 
 // Get booking by reference
 app.get('/api/bookings/:reference', async (req, res) => {
   try {
-    const bookingResult = await pool.query(
-      `SELECT b.*, e.name as event_name, e.date as event_date, e.venue 
-       FROM bookings b
-       JOIN events e ON b.event_id = e.id
-       WHERE b.booking_reference = $1`,
+    const bookingResult = await query(
+      'SELECT b.*, e.name as event_name, e.date as event_date FROM bookings b JOIN events e ON b.event_id = e.id WHERE b.booking_reference = ?',
       [req.params.reference]
     );
-    
     if (bookingResult.rows.length === 0) {
       return res.status(404).json({ error: 'Booking not found' });
     }
-    
-    const booking = bookingResult.rows[0];
-    
-    // Get seats for this booking
-    const seatsResult = await pool.query(
-      'SELECT * FROM seats WHERE booking_id = $1',
-      [booking.id]
-    );
-    
-    res.json({ 
-      ...booking, 
-      seats: seatsResult.rows,
-      selectedSeats: seatsResult.rows
-    });
-    
+    const seatsResult = await query('SELECT * FROM seats WHERE booking_id = ?', [bookingResult.rows[0].id]);
+    res.json({ ...bookingResult.rows[0], seats: seatsResult.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Get all bookings for an event (admin)
-app.get('/api/bookings/event/:eventId', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT b.*, COUNT(s.id) as seat_count 
-       FROM bookings b
-       LEFT JOIN seats s ON b.id = s.booking_id
-       WHERE b.event_id = $1
-       GROUP BY b.id
-       ORDER BY b.created_at DESC`,
-      [req.params.eventId]
-    );
-    
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Cancel booking
-app.patch('/api/bookings/:id/cancel', async (req, res) => {
-  const { id } = req.params;
-
-  const client = await pool.connect();
-  
-  try {
-    await client.query('BEGIN');
-    
-    // Get booking details for email
-    const bookingResult = await client.query(
-      'SELECT * FROM bookings WHERE id = $1',
-      [id]
-    );
-    
-    if (bookingResult.rows.length === 0) {
-      throw new Error('Booking not found');
-    }
-    
-    const booking = bookingResult.rows[0];
-    
-    // Update booking status
-    await client.query(
-      'UPDATE bookings SET status = $1 WHERE id = $2',
-      ['cancelled', id]
-    );
-    
-    // Release all seats for this booking
-    await client.query(
-      'UPDATE seats SET status = $1, booking_id = NULL WHERE booking_id = $2',
-      ['available', id]
-    );
-    
-    await client.query('COMMIT');
-    
-    // Send cancellation email
-    sendEmail(
-      booking.customer_email,
-      'bookingCancelled',
-      {
-        customerName: booking.customer_name,
-        bookingReference: booking.booking_reference
-      }
-    ).catch(err => console.error('Cancellation email error:', err));
-    
-    res.json({ message: 'Booking cancelled successfully' });
-    
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error cancelling booking:', err);
-    res.status(500).json({ error: err.message });
-  } finally {
-    client.release();
-  }
-});
-
-// ==================== STATS ROUTES ====================
-
-// Get dashboard stats
-app.get('/api/stats', async (req, res) => {
-  try {
-    const [events, upcoming, bookings, seats, bookedSeats] = await Promise.all([
-      pool.query('SELECT COUNT(*) as total FROM events'),
-      pool.query('SELECT COUNT(*) as upcoming FROM events WHERE date > NOW()'),
-      pool.query('SELECT COUNT(*) as total, SUM(total_amount) as revenue FROM bookings WHERE status != $1', ['cancelled']),
-      pool.query('SELECT COUNT(*) as total FROM seats'),
-      pool.query('SELECT COUNT(*) as booked FROM seats WHERE status = $1', ['booked'])
-    ]);
-    
-    res.json({
-      totalEvents: parseInt(events.rows[0].total),
-      upcomingEvents: parseInt(upcoming.rows[0].upcoming),
-      totalBookings: parseInt(bookings.rows[0].total) || 0,
-      totalRevenue: parseFloat(bookings.rows[0].revenue) || 0,
-      totalSeats: parseInt(seats.rows[0].total) || 0,
-      bookedSeats: parseInt(bookedSeats.rows[0].booked) || 0,
-      occupancyRate: seats.rows[0].total > 0 
-        ? Math.round((bookedSeats.rows[0].booked / seats.rows[0].total) * 100) 
-        : 0
-    });
-    
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    database: isPostgreSQL ? 'PostgreSQL' : 'SQLite',
+    mode: isPostgreSQL ? 'production' : 'offline/local'
+  });
 });
 
 // ==================== WEBSOCKET ====================
-
 io.on('connection', (socket) => {
-  console.log('🔌 New client connected:', socket.id);
-
-  socket.on('join-event', (eventId) => {
-    socket.join(`event-${eventId}`);
-    console.log(`Client ${socket.id} joined event room: event-${eventId}`);
-  });
-
-  socket.on('leave-event', (eventId) => {
-    socket.leave(`event-${eventId}`);
-    console.log(`Client ${socket.id} left event room: event-${eventId}`);
-  });
-
-  socket.on('seat-held', (data) => {
-    socket.to(`event-${data.eventId}`).emit('seat-update', {
-      seatId: data.seatId,
-      status: 'held',
-      heldUntil: data.heldUntil
-    });
-  });
-
-  socket.on('seat-released', (data) => {
-    socket.to(`event-${data.eventId}`).emit('seat-update', {
-      seatId: data.seatId,
-      status: 'available',
-      heldUntil: null
-    });
-  });
-
-  socket.on('disconnect', () => {
-    console.log('🔌 Client disconnected:', socket.id);
-  });
-});
-
-// ==================== HEALTH CHECK ====================
-
-app.get('/api/health', async (req, res) => {
-  try {
-    await pool.query('SELECT 1');
-    res.json({ 
-      status: 'OK', 
-      timestamp: new Date().toISOString(),
-      database: 'connected',
-      environment: process.env.NODE_ENV || 'development',
-      websocket: 'running'
-    });
-  } catch (err) {
-    res.status(500).json({ 
-      status: 'ERROR', 
-      timestamp: new Date().toISOString(),
-      database: 'disconnected',
-      error: err.message
-    });
-  }
-});
-
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'Stadium Ticketing API',
-    version: '1.0.0',
-    endpoints: {
-      events: '/api/events',
-      seats: '/api/seats/event/:eventId',
-      bookings: '/api/bookings',
-      admin: '/api/admin/login',
-      stats: '/api/stats',
-      health: '/api/health'
-    }
-  });
-});
-
-// ==================== ERROR HANDLING ====================
-
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({ error: 'Endpoint not found' });
-});
-
-// Global error handler
-app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
-  res.status(500).json({ error: 'Internal server error' });
+  console.log('Client connected:', socket.id);
+  socket.on('join-event', (eventId) => socket.join(`event-${eventId}`));
+  socket.on('leave-event', (eventId) => socket.leave(`event-${eventId}`));
+  socket.on('seat-held', (data) => socket.to(`event-${data.eventId}`).emit('seat-update', data));
+  socket.on('seat-released', (data) => socket.to(`event-${data.eventId}`).emit('seat-update', data));
+  socket.on('disconnect', () => console.log('Client disconnected:', socket.id));
 });
 
 // ==================== START SERVER ====================
-
-server.listen(PORT, () => {
-  console.log(`\n🚀 Server running on port ${PORT}`);
-  console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔌 WebSocket server running`);
-  console.log(`📊 Health check: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api/health`);
-  console.log(`📝 API Root: ${process.env.BASE_URL || `http://localhost:${PORT}`}/\n`);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('\n📴 SIGTERM received, closing connections...');
-  await pool.end();
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
+async function startServer() {
+  await initDatabase();
+  server.listen(PORT, () => {
+    console.log(`\n🚀 Server running on http://localhost:${PORT}`);
+    console.log(`📡 Database: ${isPostgreSQL ? 'PostgreSQL' : 'SQLite'}`);
+    console.log(`📊 Health: http://localhost:${PORT}/api/health\n`);
   });
-});
+}
 
-process.on('SIGINT', async () => {
-  console.log('\n📴 SIGINT received, closing connections...');
-  await pool.end();
-  server.close(() => {
-    console.log('Server closed');
-    process.exit(0);
-  });
-});
+startServer();
 
-module.exports = { app, server, pool, io };
+module.exports = { app, server, db, io };
