@@ -5,9 +5,7 @@ const bcrypt = require('bcryptjs');
 const http = require('http');
 const socketIo = require('socket.io');
 const path = require('path');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const { sendEmail } = require('./services/emailService');
-const { sendSMS } = require('./services/smsService');
 require('dotenv').config();
 
 const app = express();
@@ -373,6 +371,7 @@ app.post('/api/bookings', async (req, res) => {
 
   const bookingRef = generateBookingReference();
   const totalAmount = seats.reduce((sum, seat) => sum + seat.price, 0);
+  const totalWithFees = totalAmount * 1.1;
 
   const client = await pool.connect();
   
@@ -385,7 +384,7 @@ app.post('/api/bookings', async (req, res) => {
        (event_id, customer_name, customer_email, customer_phone, total_amount, booking_reference) 
        VALUES ($1, $2, $3, $4, $5, $6) 
        RETURNING id`,
-      [eventId, customerName, customerEmail, customerPhone, totalAmount, bookingRef]
+      [eventId, customerName, customerEmail, customerPhone, totalWithFees, bookingRef]
     );
     
     const bookingId = bookingResult.rows[0].id;
@@ -411,7 +410,7 @@ app.post('/api/bookings', async (req, res) => {
       });
     });
     
-    // Get event details for notifications
+    // Get event details for email
     const eventResult = await client.query(
       'SELECT * FROM events WHERE id = $1',
       [eventId]
@@ -424,9 +423,7 @@ app.post('/api/bookings', async (req, res) => {
       seat: s.seat_number || s.seat
     }));
 
-    const totalWithFees = (totalAmount * 1.1).toFixed(2);
-
-    // Send email confirmation with PDF attachment (don't await - don't block response)
+    // Send email confirmation with PDF (don't await - don't block response)
     sendEmail(
       customerEmail,
       'bookingConfirmation',
@@ -438,28 +435,15 @@ app.post('/api/bookings', async (req, res) => {
         eventDate: formatEventDate(event.date),
         venue: event.venue || 'Main Stadium',
         seats: seatList,
-        total: totalWithFees
+        total: totalWithFees.toFixed(2)
       }
     ).catch(err => console.error('Email error:', err));
-
-    // Send SMS confirmation if phone number provided
-    if (customerPhone) {
-      sendSMS(
-        customerPhone,
-        'bookingConfirmation',
-        {
-          bookingReference: bookingRef,
-          eventName: event.name,
-          eventDate: new Date(event.date).toLocaleDateString()
-        }
-      ).catch(err => console.error('SMS error:', err));
-    }
     
     res.status(201).json({
       message: 'Booking created successfully',
       bookingId,
       bookingReference: bookingRef,
-      totalAmount: totalWithFees
+      totalAmount: totalWithFees.toFixed(2)
     });
     
   } catch (err) {
@@ -497,7 +481,7 @@ app.get('/api/bookings/:reference', async (req, res) => {
     res.json({ 
       ...booking, 
       seats: seatsResult.rows,
-      selectedSeats: seatsResult.rows // For frontend compatibility
+      selectedSeats: seatsResult.rows
     });
     
   } catch (err) {
@@ -568,17 +552,6 @@ app.patch('/api/bookings/:id/cancel', async (req, res) => {
         bookingReference: booking.booking_reference
       }
     ).catch(err => console.error('Cancellation email error:', err));
-
-    // Send cancellation SMS
-    if (booking.customer_phone) {
-      sendSMS(
-        booking.customer_phone,
-        'bookingCancelled',
-        {
-          bookingReference: booking.booking_reference
-        }
-      ).catch(err => console.error('Cancellation SMS error:', err));
-    }
     
     res.json({ message: 'Booking cancelled successfully' });
     
@@ -588,36 +561,6 @@ app.patch('/api/bookings/:id/cancel', async (req, res) => {
     res.status(500).json({ error: err.message });
   } finally {
     client.release();
-  }
-});
-
-// ==================== STRIPE PAYMENT ROUTES ====================
-
-// Create payment intent
-app.post('/api/create-payment', async (req, res) => {
-  const { paymentMethodId, amount } = req.body;
-
-  try {
-    const paymentIntent = await stripe.paymentIntents.create({
-      amount: Math.round(amount * 100), // Convert to cents
-      currency: 'usd',
-      payment_method: paymentMethodId,
-      confirmation_method: 'manual',
-      confirm: true,
-      return_url: process.env.FRONTEND_URL || 'http://localhost:5173'
-    });
-
-    res.json({ 
-      success: true, 
-      paymentIntent: paymentIntent.id,
-      status: paymentIntent.status
-    });
-  } catch (error) {
-    console.error('Stripe error:', error);
-    res.status(400).json({ 
-      success: false, 
-      error: error.message 
-    });
   }
 });
 
@@ -697,20 +640,74 @@ app.get('/api/health', async (req, res) => {
       timestamp: new Date().toISOString(),
       database: 'connected',
       environment: process.env.NODE_ENV || 'development',
-      websocket: 'running',
-      services: {
-        email: process.env.EMAIL_USER ? 'configured' : 'not configured',
-        sms: process.env.TWILIO_ACCOUNT_SID ? 'configured' : 'not configured',
-        stripe: process.env.STRIPE_SECRET_KEY ? 'configured' : 'not configured'
-      }
+      websocket: 'running'
     });
   } catch (err) {
     res.status(500).json({ 
       status: 'ERROR', 
       timestamp: new Date().toISOString(),
       database: 'disconnected',
-      error: err.message,
-      environment: process.env.NODE_ENV || 'development'
+      error: err.message
     });
   }
 });
+
+// Root endpoint
+app.get('/', (req, res) => {
+  res.json({ 
+    message: 'Stadium Ticketing API',
+    version: '1.0.0',
+    endpoints: {
+      events: '/api/events',
+      seats: '/api/seats/event/:eventId',
+      bookings: '/api/bookings',
+      admin: '/api/admin/login',
+      stats: '/api/stats',
+      health: '/api/health'
+    }
+  });
+});
+
+// ==================== ERROR HANDLING ====================
+
+// 404 handler
+app.use((req, res) => {
+  res.status(404).json({ error: 'Endpoint not found' });
+});
+
+// Global error handler
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
+// ==================== START SERVER ====================
+
+server.listen(PORT, () => {
+  console.log(`\n🚀 Server running on port ${PORT}`);
+  console.log(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔌 WebSocket server running`);
+  console.log(`📊 Health check: ${process.env.BASE_URL || `http://localhost:${PORT}`}/api/health`);
+  console.log(`📝 API Root: ${process.env.BASE_URL || `http://localhost:${PORT}`}/\n`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  console.log('\n📴 SIGTERM received, closing connections...');
+  await pool.end();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  console.log('\n📴 SIGINT received, closing connections...');
+  await pool.end();
+  server.close(() => {
+    console.log('Server closed');
+    process.exit(0);
+  });
+});
+
+module.exports = { app, server, pool, io };
