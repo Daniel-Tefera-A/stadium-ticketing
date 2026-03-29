@@ -10,7 +10,6 @@ import CheckoutPage from './pages/CheckoutPage';
 import BookingConfirmationPage from './pages/BookingConfirmationPage';
 import MyBookingsPage from './pages/MyBookingsPage';
 import NotFoundPage from './pages/NotFoundPage';
-import Week2Demo from './pages/Week2Demo';
 import './styles/App.css';
 
 function App() {
@@ -19,17 +18,22 @@ function App() {
       <div className="App">
         <Navbar />
         <Routes>
+          {/* Public Routes */}
           <Route path="/" element={<HomePage />} />
           <Route path="/event/:id" element={<EventDetailPage />} />
-          <Route path="/admin" element={<AdminPage />} />
-          <Route path="/admin-dashboard" element={<AdminDashboard />} />
-          <Route path="/admin-bookings" element={<AdminBookingsPage />} />
           <Route path="/checkout/:eventId" element={<CheckoutPage />} />
           <Route path="/confirmation/:bookingReference" element={<BookingConfirmationPage />} />
           <Route path="/my-bookings" element={<MyBookingsPage />} />
-          <Route path="/week2-demo" element={<Week2Demo />} />
+          
+          {/* Admin Routes */}
+          <Route path="/admin" element={<AdminPage />} />
+          <Route path="/admin-dashboard" element={<AdminDashboard />} />
+          <Route path="/admin-bookings" element={<AdminBookingsPage />} />
+          
+          {/* 404 Route - Always last */}
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
+        
         <footer className="footer">
           <div className="container">
             <p>&copy; 2024 Stadium Events. All rights reserved.</p>
